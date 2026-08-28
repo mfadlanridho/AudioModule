@@ -14,11 +14,19 @@ local script = script
 
 local Types = require(script.Types)
 local Channels = require(script.Channels)
+local NetworkBridge = require(script.NetworkBridge)
 
 export type PlayOptions = Types.PlayOptions
 export type SoundCategory = Types.SoundCategory
+export type NetworkProvider = NetworkBridge.NetworkProvider
 
 local AudioModule = {}
+AudioModule.NetworkBridge = NetworkBridge
+
+--- Sets a custom network provider (ByteNet, RemoteEvent, or custom) for AudioModule
+function AudioModule.setNetworkProvider(provider: NetworkProvider)
+	NetworkBridge.setProvider(provider)
+end
 local activeLoops: { [string]: Sound } = {}
 
 -- Pitch combo state
