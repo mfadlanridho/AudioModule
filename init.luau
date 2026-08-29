@@ -16,6 +16,10 @@ local Types = require(script.Types)
 local Channels = require(script.Channels)
 local NetworkBridge = require(script.NetworkBridge)
 
+local Logger = require(ReplicatedStorage.Packages.LoggerModule)
+
+local log = Logger.create("AudioModule")
+
 export type PlayOptions = Types.PlayOptions
 export type SoundCategory = Types.SoundCategory
 export type NetworkProvider = NetworkBridge.NetworkProvider
@@ -37,29 +41,108 @@ local COMBO_WINDOW_SECONDS = 3.0
 -- BGM state
 local currentBgmSound: Sound? = nil
 
+local ContentProvider = game:GetService("ContentProvider")
+
+-- Helper: Ensures physical Audio folder and sound templates exist in ReplicatedStorage
+local function ensurePhysicalAudioFolder(): Folder
+	local audioFolder = ReplicatedStorage:FindFirstChild("Audio") :: Folder?
+	if not audioFolder then
+		audioFolder = Instance.new("Folder")
+		audioFolder.Name = "Audio"
+		audioFolder.Parent = ReplicatedStorage
+	end
+
+	if audioFolder and not audioFolder:FindFirstChild("Grabbed") then
+		local grabbedSound = Instance.new("Sound")
+		grabbedSound.Name = "Grabbed"
+		grabbedSound.SoundId = "rbxassetid://136401198004658"
+		grabbedSound.Volume = 1.0
+		grabbedSound.Looped = true
+		grabbedSound.Parent = audioFolder
+	end
+
+	if audioFolder and not audioFolder:FindFirstChild("Flung") then
+		local flungSound = Instance.new("Sound")
+		flungSound.Name = "Flung"
+		flungSound.SoundId = "rbxassetid://136680544819732"
+		flungSound.Volume = 1.0
+		flungSound.Parent = audioFolder
+	end
+
+	return audioFolder :: Folder
+end
+
+-- Initialize physical audio template folder on module require
+ensurePhysicalAudioFolder()
+
 -- Helper: Resolves sound ID and base volume from physical folder, instance, or ID
 local function resolveSound(soundInput: any): (string?, number, number)
 	if typeof(soundInput) == "Instance" and soundInput:IsA("Sound") then
 		return soundInput.SoundId, soundInput.Volume, soundInput.PlaybackSpeed
 	elseif typeof(soundInput) == "string" then
 		-- Check physical ReplicatedStorage.Audio folder
-		local audioFolder = ReplicatedStorage:FindFirstChild("Audio")
-		if audioFolder then
-			local soundTemplate = audioFolder:FindFirstChild(soundInput, true)
-			if soundTemplate and soundTemplate:IsA("Sound") then
-				return soundTemplate.SoundId, soundTemplate.Volume, soundTemplate.PlaybackSpeed
-			end
+		local audioFolder = ensurePhysicalAudioFolder()
+		local soundTemplate = audioFolder:FindFirstChild(soundInput, true)
+		if soundTemplate and soundTemplate:IsA("Sound") then
+			return soundTemplate.SoundId, soundTemplate.Volume, soundTemplate.PlaybackSpeed
 		end
 
 		-- Raw asset ID
 		if string.match(soundInput, "^rbxassetid://") or string.match(soundInput, "^http") then
-			return soundInput, 0.5, 1.0
+			return soundInput, 1.0, 1.0
 		elseif string.match(soundInput, "^%d+$") then
-			return "rbxassetid://" .. soundInput, 0.5, 1.0
+			return "rbxassetid://" .. soundInput, 1.0, 1.0
 		end
 	end
 
-	return nil, 0.5, 1.0
+	return nil, 1.0, 1.0
+end
+
+--- Preloads sound instances, asset IDs, or folder keys asynchronously using ContentProvider.
+-- @param soundInputs { any } - Array of Sound instances, Asset ID strings, or sound names
+function AudioModule.preloadSounds(soundInputs: { any })
+	local instancesToPreload: { Instance } = {}
+	for _, soundInput in ipairs(soundInputs) do
+		local soundId = resolveSound(soundInput)
+		if soundId then
+			local sound = Instance.new("Sound")
+			sound.SoundId = soundId
+			table.insert(instancesToPreload, sound)
+		end
+	end
+
+	if #instancesToPreload > 0 then
+		task.spawn(function()
+			pcall(function()
+				ContentProvider:PreloadAsync(instancesToPreload)
+				log("Preloaded sound instances via ContentProvider successfully")
+			end)
+		end)
+	end
+end
+
+local function attachSoundApiLogging(sound: Sound, soundId: string)
+	if sound.IsLoaded then
+		log(string.format("🔊 [Sound API] Sound is loaded & playing (%s | Length: %.2fs)", soundId, sound.TimeLength))
+	else
+		log(string.format("⏳ [Sound API] Waiting for sound asset to load from CDN (%s)...", soundId))
+		local conn: RBXScriptConnection?
+		conn = sound.Loaded:Connect(function()
+			if conn then
+				conn:Disconnect()
+				conn = nil
+			end
+			log(string.format("✅ [Sound API] Sound asset loaded successfully! (%s | Length: %.2fs)", soundId, sound.TimeLength))
+		end)
+	end
+
+	sound.Ended:Connect(function()
+		log(string.format("🔚 [Sound API] Sound playback ended naturally (%s)", soundId))
+	end)
+
+	sound.Stopped:Connect(function()
+		log(string.format("⏹️ [Sound API] Sound playback stopped (%s)", soundId))
+	end)
 end
 
 --- Plays a 2D or 3D one-shot sound effect.
@@ -68,7 +151,10 @@ end
 -- @return Sound?
 function AudioModule.playOneShot(soundInput: any, options: PlayOptions?): Sound?
 	local soundId, defaultVol, defaultPitch = resolveSound(soundInput)
-	if not soundId then return nil end
+	if not soundId then
+		log("⚠️ playOneShot failed: could not resolve sound input:", tostring(soundInput))
+		return nil
+	end
 
 	local opt = options or {}
 	local volume = opt.volume or defaultVol
@@ -88,7 +174,9 @@ function AudioModule.playOneShot(soundInput: any, options: PlayOptions?): Sound?
 	sound.SoundGroup = Channels.GetGroup(opt.category or "SFX")
 	sound.Parent = opt.parent or SoundService
 
+	attachSoundApiLogging(sound, soundId)
 	sound:Play()
+	log(string.format("🎵 playOneShot: %s | Vol: %.2f | Pitch: %.2f | Parent: %s", soundId, volume, pitch, sound.Parent and sound.Parent.Name or "Nil"))
 
 	local autoCleanupTime = sound.TimeLength > 0 and (sound.TimeLength + 0.5) or 10
 	Debris:AddItem(sound, autoCleanupTime)
@@ -126,7 +214,10 @@ function AudioModule.playLooped(loopId: string, soundInput: any, options: PlayOp
 	if activeLoops[loopId] then return activeLoops[loopId] end
 
 	local soundId, defaultVol, defaultPitch = resolveSound(soundInput)
-	if not soundId then return nil end
+	if not soundId then
+		log("⚠️ playLooped failed: could not resolve sound input:", tostring(soundInput))
+		return nil
+	end
 
 	local opt = options or {}
 	local sound = Instance.new("Sound")
@@ -138,8 +229,10 @@ function AudioModule.playLooped(loopId: string, soundInput: any, options: PlayOp
 	sound.SoundGroup = Channels.GetGroup(opt.category or "SFX")
 	sound.Parent = opt.parent or SoundService
 
+	attachSoundApiLogging(sound, soundId)
 	sound:Play()
 	activeLoops[loopId] = sound
+	log(string.format("🔄 playLooped (%s): %s | Vol: %.2f | Parent: %s", loopId, soundId, sound.Volume, sound.Parent and sound.Parent.Name or "Nil"))
 
 	return sound
 end
@@ -152,6 +245,7 @@ function AudioModule.stopLooped(loopId: string, fadeOutTime: number?)
 	if not sound then return end
 
 	activeLoops[loopId] = nil
+	log(string.format("🛑 stopLooped (%s)", loopId))
 
 	if fadeOutTime and fadeOutTime > 0 then
 		local fade = TweenService:Create(sound, TweenInfo.new(fadeOutTime, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Volume = 0 })
