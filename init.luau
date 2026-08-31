@@ -52,23 +52,6 @@ local function ensurePhysicalAudioFolder(): Folder
 		audioFolder.Parent = ReplicatedStorage
 	end
 
-	if audioFolder and not audioFolder:FindFirstChild("Grabbed") then
-		local grabbedSound = Instance.new("Sound")
-		grabbedSound.Name = "Grabbed"
-		grabbedSound.SoundId = "rbxassetid://136401198004658"
-		grabbedSound.Volume = 1.0
-		grabbedSound.Looped = true
-		grabbedSound.Parent = audioFolder
-	end
-
-	if audioFolder and not audioFolder:FindFirstChild("Flung") then
-		local flungSound = Instance.new("Sound")
-		flungSound.Name = "Flung"
-		flungSound.SoundId = "rbxassetid://136680544819732"
-		flungSound.Volume = 1.0
-		flungSound.Parent = audioFolder
-	end
-
 	return audioFolder :: Folder
 end
 
@@ -184,7 +167,7 @@ function AudioModule.playOneShot(soundInput: any, options: PlayOptions?): Sound?
 	return sound
 end
 
---- Plays a coin/item pickup sound with dynamic combo pitch escalation (1.0 -> 1.5).
+--- Plays a item pickup sound with dynamic combo pitch escalation (1.0 -> 1.5).
 -- @param soundInput any
 -- @param parent Instance?
 -- @return Sound?
