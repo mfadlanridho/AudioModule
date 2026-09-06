@@ -10,6 +10,7 @@ local Debris = game:GetService("Debris")
 local SoundService = game:GetService("SoundService")
 local TweenService = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local script = script
 
 local Types = require(script.Types)
@@ -133,6 +134,12 @@ end
 -- @param options PlayOptions?
 -- @return Sound?
 function AudioModule.playOneShot(soundInput: any, options: PlayOptions?): Sound?
+	if RunService:IsServer() then
+		log("ℹ️ playOneShot called on Server. Routing to playOnAllClients for client-authoritative playback.")
+		AudioModule.playOnAllClients(soundInput, options)
+		return nil
+	end
+
 	local soundId, defaultVol, defaultPitch = resolveSound(soundInput)
 	if not soundId then
 		log("⚠️ playOneShot failed: could not resolve sound input:", tostring(soundInput))
@@ -280,6 +287,84 @@ end
 --- Configures volume for a specific SoundGroup channel (Master, SFX, Music, UI, Voice).
 function AudioModule.setVolume(category: SoundCategory | "Master", volume: number)
 	Channels.SetVolume(category, volume)
+end
+
+--- [SERVER ONLY] Broadcasts a sound to all connected clients.
+-- @param soundInput any - Sound instance, folder name key, or Asset ID
+-- @param options PlayOptions?
+function AudioModule.playOnAllClients(soundInput: any, options: PlayOptions?)
+	if not RunService:IsServer() then
+		warn("[AudioModule] playOnAllClients was called on the Client! Use playOneShot instead.")
+		AudioModule.playOneShot(soundInput, options)
+		return
+	end
+
+	local opt = options or {}
+	local payload: Types.NetworkSoundPayload = {
+		soundInput = soundInput,
+		parent = opt.parent,
+		volume = opt.volume,
+		pitch = opt.pitch,
+		pitchVariance = opt.pitchVariance,
+		category = opt.category or "SFX",
+		isCombo = opt.isCombo,
+	}
+
+	NetworkBridge.send("PlaySound", payload, nil)
+end
+
+--- [SERVER ONLY] Plays a sound to a single specific client.
+-- @param targetPlayer Player - The Player instance to play sound for
+-- @param soundInput any - Sound instance, folder name key, or Asset ID
+-- @param options PlayOptions?
+function AudioModule.playOnClient(targetPlayer: Player, soundInput: any, options: PlayOptions?)
+	if not RunService:IsServer() then
+		warn("[AudioModule] playOnClient was called on the Client! Use playOneShot instead.")
+		AudioModule.playOneShot(soundInput, options)
+		return
+	end
+
+	assert(typeof(targetPlayer) == "Instance" and targetPlayer:IsA("Player"), "[AudioModule] targetPlayer must be a valid Player instance!")
+
+	local opt = options or {}
+	local payload: Types.NetworkSoundPayload = {
+		soundInput = soundInput,
+		parent = opt.parent,
+		volume = opt.volume,
+		pitch = opt.pitch,
+		pitchVariance = opt.pitchVariance,
+		category = opt.category or "SFX",
+		isCombo = opt.isCombo,
+	}
+
+	NetworkBridge.send("PlaySound", payload, targetPlayer)
+end
+
+-- Client Auto-Listener: Automatically processes audio packets sent from Server
+local clientListenerInitialized = false
+local function initClientNetworkListener()
+	if clientListenerInitialized or not RunService:IsClient() then return end
+	clientListenerInitialized = true
+
+	NetworkBridge.listen("PlaySound", function(payload: any)
+		if not payload or not payload.soundInput then return end
+
+		if payload.isCombo then
+			AudioModule.playPickupCombo(payload.soundInput, payload.parent)
+		else
+			AudioModule.playOneShot(payload.soundInput, {
+				parent = payload.parent,
+				volume = payload.volume,
+				pitch = payload.pitch,
+				pitchVariance = payload.pitchVariance,
+				category = payload.category,
+			})
+		end
+	end)
+end
+
+if RunService:IsClient() then
+	task.spawn(initClientNetworkListener)
 end
 
 return AudioModule

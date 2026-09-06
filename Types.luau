@@ -14,6 +14,18 @@ export type PlayOptions = {
 	parent: Instance?,
 	loop: boolean?,
 	fadeInTime: number?,
+	isCombo: boolean?,
+}
+
+export type NetworkSoundPayload = {
+	soundInput: any,
+	parent: Instance?,
+	volume: number?,
+	pitch: number?,
+	pitchVariance: number?,
+	category: SoundCategory?,
+	isCombo: boolean?,
 }
 
 return {}
+

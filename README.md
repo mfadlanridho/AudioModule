@@ -52,6 +52,7 @@ AudioModule.setNetworkProvider({
 
 ## 🚀 Usage Example
 
+### Client-Side Playback
 ```luau
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local AudioModule = require(ReplicatedStorage.Packages.AudioModule)
@@ -72,6 +73,26 @@ AudioModule.playBGM("ThemeSong", 2.0)
 AudioModule.setVolume("Music", 0.3)
 AudioModule.setVolume("SFX", 0.8)
 ```
+
+### Server-Side Network Playback (Isomorphic / Universal)
+When required on the server, `AudioModule` provides zero-boilerplate broadcast and targeted client audio:
+
+```luau
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local AudioModule = require(ReplicatedStorage.Packages.AudioModule)
+
+-- 1. Broadcast 3D sound to all connected clients
+AudioModule.playOnAllClients("RagdollHit", {
+    parent = victimHrp,
+    volume = 0.8,
+})
+
+-- 2. Play targeted sound for a specific player (e.g. combo pickup or private UI)
+AudioModule.playOnClient(player, "CoinPickup", {
+    isCombo = true,
+})
+```
+*Note: Clients automatically listen and play server-triggered audio the moment `AudioModule` is required on the client.*
 
 ---
 

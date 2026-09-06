@@ -26,12 +26,31 @@ local function getMode(): "ByteNet" | "RemoteEvent" | "Local"
 		return "ByteNet"
 	end
 
-	local remotesFolder = ReplicatedStorage:FindFirstChild("Remotes")
-	if remotesFolder or ReplicatedStorage:FindFirstChildOfClass("RemoteEvent") then
-		return "RemoteEvent"
-	end
+	return "RemoteEvent"
+end
 
-	return "Local"
+local function getRemotesFolder(): Instance
+	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+	if not remotes and RunService:IsServer() then
+		local newFolder = Instance.new("Folder")
+		newFolder.Name = "Remotes"
+		newFolder.Parent = ReplicatedStorage
+		return newFolder
+	end
+	return remotes or ReplicatedStorage
+end
+
+local function getRemote(actionName: string): RemoteEvent?
+	local remotesFolder = getRemotesFolder()
+	local candidateName = "AudioModule_" .. actionName
+	local remote = remotesFolder:FindFirstChild(candidateName) or remotesFolder:FindFirstChild(actionName)
+	if not remote and RunService:IsServer() then
+		local newRemote = Instance.new("RemoteEvent")
+		newRemote.Name = candidateName
+		newRemote.Parent = remotesFolder
+		remote = newRemote
+	end
+	return remote :: RemoteEvent?
 end
 
 function NetworkBridge.setProvider(provider: NetworkProvider)
@@ -58,15 +77,7 @@ function NetworkBridge.send(actionName: string, payload: any, targetPlayer: Play
 			end
 		end
 	elseif mode == "RemoteEvent" then
-		local remotesFolder = ReplicatedStorage:FindFirstChild("Remotes") or ReplicatedStorage
-		local remote = remotesFolder:FindFirstChild("AudioModule_" .. actionName) :: RemoteEvent?
-		if not remote and RunService:IsServer() then
-			local newRemote = Instance.new("RemoteEvent")
-			newRemote.Name = "AudioModule_" .. actionName
-			newRemote.Parent = remotesFolder
-			remote = newRemote
-		end
-
+		local remote = getRemote(actionName)
 		if remote then
 			if RunService:IsClient() then
 				remote:FireServer(payload)
@@ -92,20 +103,21 @@ function NetworkBridge.listen(actionName: string, callback: (payload: any, playe
 			byteNetModule.NetworkPackets[actionName].listen(callback)
 		end
 	elseif mode == "RemoteEvent" then
-		local remotesFolder = ReplicatedStorage:FindFirstChild("Remotes") or ReplicatedStorage
 		if RunService:IsServer() then
-			local remote = remotesFolder:FindFirstChild("AudioModule_" .. actionName) :: RemoteEvent?
-			if not remote then
-				remote = Instance.new("RemoteEvent")
-				remote.Name = "AudioModule_" .. actionName
-				remote.Parent = remotesFolder
-			end
-			remote.OnServerEvent:Connect(function(player, payload)
-				callback(payload, player)
-			end)
-		elseif RunService:IsClient() then
-			local remote = remotesFolder:WaitForChild("AudioModule_" .. actionName, 5) :: RemoteEvent?
+			local remote = getRemote(actionName)
 			if remote then
+				remote.OnServerEvent:Connect(function(player, payload)
+					callback(payload, player)
+				end)
+			end
+		elseif RunService:IsClient() then
+			local remotesFolder = ReplicatedStorage:WaitForChild("Remotes", 5) or ReplicatedStorage
+			local candidateName = "AudioModule_" .. actionName
+			local remote = remotesFolder:FindFirstChild(candidateName) or remotesFolder:FindFirstChild(actionName)
+			if not remote then
+				remote = remotesFolder:WaitForChild(candidateName, 8) :: RemoteEvent?
+			end
+			if remote and remote:IsA("RemoteEvent") then
 				remote.OnClientEvent:Connect(function(payload)
 					callback(payload, nil :: any)
 				end)
