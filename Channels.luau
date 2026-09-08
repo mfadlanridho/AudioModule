@@ -65,7 +65,8 @@ end
 function Channels.GetGroup(category: string?): SoundGroup
 	if not isInitialized then Channels.Init() end
 
-	if category == "Music" then return musicGroup
+	if category == "Master" then return masterGroup
+	elseif category == "Music" then return musicGroup
 	elseif category == "UI" then return uiGroup
 	elseif category == "Voice" then return voiceGroup
 	else return sfxGroup end

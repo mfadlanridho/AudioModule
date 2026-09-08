@@ -57,19 +57,29 @@ AudioModule.setNetworkProvider({
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local AudioModule = require(ReplicatedStorage.Packages.AudioModule)
 
--- 1. Play a 2D or 3D SFX with random pitch variance
+-- 1. Register named sound dictionary (optional, bypasses physical sound folders)
+AudioModule.registerSounds({
+    CoinPickup = "rbxassetid://12345678",
+    EggGrab = { soundId = "rbxassetid://87654321", volume = 0.8, pitch = 1.0, category = "SFX" },
+})
+
+-- 2. Play a 2D or 3D SFX with random pitch variance or 3D world position
 AudioModule.playOneShot("CoinPickup", {
     pitchVariance = 0.05,
     category = "SFX",
+    position = Vector3.new(0, 10, 0), -- 3D world position
+    rollOffMaxDistance = 100,
 })
 
--- 2. Play rapid pickup combo audio
+-- 3. Play rapid pickup combo audio
 AudioModule.playPickupCombo("CoinPickup")
 
--- 3. Cross-fade Background Music (BGM)
+-- 4. Play, cross-fade, or stop Background Music (BGM)
 AudioModule.playBGM("ThemeSong", 2.0)
+AudioModule.stopBGM(1.5)
 
--- 4. Adjust Channel Volumes from Settings Menu
+-- 5. Adjust Channel Volumes from Settings Menu (Master, SFX, Music, UI, Voice)
+AudioModule.setVolume("Master", 1.0)
 AudioModule.setVolume("Music", 0.3)
 AudioModule.setVolume("SFX", 0.8)
 ```

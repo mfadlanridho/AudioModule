@@ -17,9 +17,11 @@ local Types = require(script.Types)
 local Channels = require(script.Channels)
 local NetworkBridge = require(script.NetworkBridge)
 
-local Logger = require(ReplicatedStorage.Packages.LoggerModule)
+local LoggerModule = (ReplicatedStorage:FindFirstChild("Packages") and ReplicatedStorage.Packages:FindFirstChild("LoggerModule"))
+	or (ReplicatedStorage:FindFirstChild("Submodules") and ReplicatedStorage.Submodules:FindFirstChild("LoggerModule"))
+local Logger = if LoggerModule then require(LoggerModule) :: any else nil
 
-local log = Logger.create("AudioModule")
+local log = if Logger and Logger.create then Logger.create("AudioModule") else function(...) print("[AudioModule]", ...) end
 
 export type PlayOptions = Types.PlayOptions
 export type SoundCategory = Types.SoundCategory
@@ -33,6 +35,7 @@ function AudioModule.setNetworkProvider(provider: NetworkProvider)
 	NetworkBridge.setProvider(provider)
 end
 local activeLoops: { [string]: Sound } = {}
+local activeAttachments: { [string]: Attachment } = {}
 
 -- Pitch combo state
 local comboCount = 0
@@ -59,27 +62,47 @@ end
 -- Initialize physical audio template folder on module require
 ensurePhysicalAudioFolder()
 
--- Helper: Resolves sound ID and base volume from physical folder, instance, or ID
-local function resolveSound(soundInput: any): (string?, number, number)
+local registeredSounds: { [string]: any } = {}
+
+--- Registers a dictionary of named sound configurations or asset IDs.
+-- @param sounds { [string]: string | Types.SoundConfig }
+function AudioModule.registerSounds(sounds: { [string]: any })
+	for name, config in pairs(sounds) do
+		registeredSounds[name] = config
+	end
+	log("Registered named sounds into audio registry")
+end
+
+-- Helper: Resolves sound ID and base volume from registered sounds, physical folder, instance, or ID
+local function resolveSound(soundInput: any): (string?, number, number, SoundCategory?)
+	if registeredSounds[soundInput] then
+		local entry = registeredSounds[soundInput]
+		if typeof(entry) == "table" and entry.soundId then
+			return entry.soundId, entry.volume or 1.0, entry.pitch or 1.0, entry.category
+		elseif typeof(entry) == "string" then
+			soundInput = entry
+		end
+	end
+
 	if typeof(soundInput) == "Instance" and soundInput:IsA("Sound") then
-		return soundInput.SoundId, soundInput.Volume, soundInput.PlaybackSpeed
+		return soundInput.SoundId, soundInput.Volume, soundInput.PlaybackSpeed, nil
 	elseif typeof(soundInput) == "string" then
 		-- Check physical ReplicatedStorage.Audio folder
 		local audioFolder = ensurePhysicalAudioFolder()
 		local soundTemplate = audioFolder:FindFirstChild(soundInput, true)
 		if soundTemplate and soundTemplate:IsA("Sound") then
-			return soundTemplate.SoundId, soundTemplate.Volume, soundTemplate.PlaybackSpeed
+			return soundTemplate.SoundId, soundTemplate.Volume, soundTemplate.PlaybackSpeed, nil
 		end
 
 		-- Raw asset ID
 		if string.match(soundInput, "^rbxassetid://") or string.match(soundInput, "^http") then
-			return soundInput, 1.0, 1.0
+			return soundInput, 1.0, 1.0, nil
 		elseif string.match(soundInput, "^%d+$") then
-			return "rbxassetid://" .. soundInput, 1.0, 1.0
+			return "rbxassetid://" .. soundInput, 1.0, 1.0, nil
 		end
 	end
 
-	return nil, 1.0, 1.0
+	return nil, 1.0, 1.0, nil
 end
 
 --- Preloads sound instances, asset IDs, or folder keys asynchronously using ContentProvider.
@@ -129,6 +152,7 @@ local function attachSoundApiLogging(sound: Sound, soundId: string)
 	end)
 end
 
+
 --- Plays a 2D or 3D one-shot sound effect.
 -- @param soundInput any - Sound instance, folder name key, or Asset ID
 -- @param options PlayOptions?
@@ -140,7 +164,7 @@ function AudioModule.playOneShot(soundInput: any, options: PlayOptions?): Sound?
 		return nil
 	end
 
-	local soundId, defaultVol, defaultPitch = resolveSound(soundInput)
+	local soundId, defaultVol, defaultPitch, registeredCategory = resolveSound(soundInput)
 	if not soundId then
 		log("⚠️ playOneShot failed: could not resolve sound input:", tostring(soundInput))
 		return nil
@@ -149,6 +173,7 @@ function AudioModule.playOneShot(soundInput: any, options: PlayOptions?): Sound?
 	local opt = options or {}
 	local volume = opt.volume or defaultVol
 	local pitch = opt.pitch or defaultPitch
+	local category = opt.category or registeredCategory or "SFX"
 
 	-- Apply random pitch variance if requested (prevents sound repetition fatigue)
 	if opt.pitchVariance and opt.pitchVariance > 0 then
@@ -161,15 +186,43 @@ function AudioModule.playOneShot(soundInput: any, options: PlayOptions?): Sound?
 	sound.SoundId = soundId
 	sound.Volume = volume
 	sound.PlaybackSpeed = pitch
-	sound.SoundGroup = Channels.GetGroup(opt.category or "SFX")
-	sound.Parent = opt.parent or SoundService
+	sound.SoundGroup = Channels.GetGroup(category)
+
+	if opt.rollOffMinDistance then sound.RollOffMinDistance = opt.rollOffMinDistance end
+	if opt.rollOffMaxDistance then sound.RollOffMaxDistance = opt.rollOffMaxDistance end
+	if opt.rollOffMode then sound.RollOffMode = opt.rollOffMode end
+
+	local tempAttachment: Attachment? = nil
+	if opt.parent then
+		sound.Parent = opt.parent
+	elseif opt.position then
+		tempAttachment = Instance.new("Attachment")
+		tempAttachment.Name = "AudioModule_TempAttachment"
+		tempAttachment.WorldPosition = opt.position
+		tempAttachment.Parent = workspace.Terrain
+		sound.Parent = tempAttachment
+	else
+		sound.Parent = SoundService
+	end
 
 	attachSoundApiLogging(sound, soundId)
 	sound:Play()
 	log(string.format("🎵 playOneShot: %s | Vol: %.2f | Pitch: %.2f | Parent: %s", soundId, volume, pitch, sound.Parent and sound.Parent.Name or "Nil"))
 
-	local autoCleanupTime = sound.TimeLength > 0 and (sound.TimeLength + 0.5) or 10
-	Debris:AddItem(sound, autoCleanupTime)
+	local cleanedUp = false
+	local function cleanup()
+		if cleanedUp then return end
+		cleanedUp = true
+		if tempAttachment then
+			tempAttachment:Destroy()
+			tempAttachment = nil
+		end
+		sound:Destroy()
+	end
+
+	sound.Ended:Once(cleanup)
+	sound.Stopped:Once(cleanup)
+	task.delay(15, cleanup)
 
 	return sound
 end
@@ -203,21 +256,38 @@ end
 function AudioModule.playLooped(loopId: string, soundInput: any, options: PlayOptions?): Sound?
 	if activeLoops[loopId] then return activeLoops[loopId] end
 
-	local soundId, defaultVol, defaultPitch = resolveSound(soundInput)
+	local soundId, defaultVol, defaultPitch, registeredCategory = resolveSound(soundInput)
 	if not soundId then
 		log("⚠️ playLooped failed: could not resolve sound input:", tostring(soundInput))
 		return nil
 	end
 
 	local opt = options or {}
+	local category = opt.category or registeredCategory or "SFX"
 	local sound = Instance.new("Sound")
 	sound.Name = "AudioModule_Loop_" .. loopId
 	sound.SoundId = soundId
 	sound.Looped = true
 	sound.Volume = opt.volume or defaultVol
 	sound.PlaybackSpeed = opt.pitch or defaultPitch
-	sound.SoundGroup = Channels.GetGroup(opt.category or "SFX")
-	sound.Parent = opt.parent or SoundService
+	sound.SoundGroup = Channels.GetGroup(category)
+
+	if opt.rollOffMinDistance then sound.RollOffMinDistance = opt.rollOffMinDistance end
+	if opt.rollOffMaxDistance then sound.RollOffMaxDistance = opt.rollOffMaxDistance end
+	if opt.rollOffMode then sound.RollOffMode = opt.rollOffMode end
+
+	if opt.parent then
+		sound.Parent = opt.parent
+	elseif opt.position then
+		local tempAttachment = Instance.new("Attachment")
+		tempAttachment.Name = "AudioModule_LoopAttachment_" .. loopId
+		tempAttachment.WorldPosition = opt.position
+		tempAttachment.Parent = workspace.Terrain
+		sound.Parent = tempAttachment
+		activeAttachments[loopId] = tempAttachment
+	else
+		sound.Parent = SoundService
+	end
 
 	attachSoundApiLogging(sound, soundId)
 	sound:Play()
@@ -235,18 +305,25 @@ function AudioModule.stopLooped(loopId: string, fadeOutTime: number?)
 	if not sound then return end
 
 	activeLoops[loopId] = nil
+	local attachment = activeAttachments[loopId]
+	activeAttachments[loopId] = nil
+
 	log(string.format("🛑 stopLooped (%s)", loopId))
+
+	local function finalize()
+		sound:Stop()
+		sound:Destroy()
+		if attachment then
+			attachment:Destroy()
+		end
+	end
 
 	if fadeOutTime and fadeOutTime > 0 then
 		local fade = TweenService:Create(sound, TweenInfo.new(fadeOutTime, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Volume = 0 })
 		fade:Play()
-		fade.Completed:Connect(function()
-			sound:Stop()
-			sound:Destroy()
-		end)
+		fade.Completed:Connect(finalize)
 	else
-		sound:Stop()
-		sound:Destroy()
+		finalize()
 	end
 end
 
@@ -284,6 +361,28 @@ function AudioModule.playBGM(soundInput: any, fadeDuration: number?)
 	currentBgmSound = newBgm
 end
 
+--- Stops the currently playing background music with a smooth fade-out.
+-- @param fadeDuration number? - Duration in seconds for fade-out (default: 1.5)
+function AudioModule.stopBGM(fadeDuration: number?)
+	if not currentBgmSound then return end
+
+	local duration = fadeDuration or 1.5
+	local oldBgm = currentBgmSound
+	currentBgmSound = nil
+
+	if duration > 0 then
+		local fadeOut = TweenService:Create(oldBgm, TweenInfo.new(duration), { Volume = 0 })
+		fadeOut:Play()
+		fadeOut.Completed:Connect(function()
+			oldBgm:Stop()
+			oldBgm:Destroy()
+		end)
+	else
+		oldBgm:Stop()
+		oldBgm:Destroy()
+	end
+end
+
 --- Configures volume for a specific SoundGroup channel (Master, SFX, Music, UI, Voice).
 function AudioModule.setVolume(category: SoundCategory | "Master", volume: number)
 	Channels.SetVolume(category, volume)
@@ -303,10 +402,13 @@ function AudioModule.playOnAllClients(soundInput: any, options: PlayOptions?)
 	local payload: Types.NetworkSoundPayload = {
 		soundInput = soundInput,
 		parent = opt.parent,
+		position = opt.position,
 		volume = opt.volume,
 		pitch = opt.pitch,
 		pitchVariance = opt.pitchVariance,
 		category = opt.category or "SFX",
+		rollOffMinDistance = opt.rollOffMinDistance,
+		rollOffMaxDistance = opt.rollOffMaxDistance,
 		isCombo = opt.isCombo,
 	}
 
@@ -330,10 +432,13 @@ function AudioModule.playOnClient(targetPlayer: Player, soundInput: any, options
 	local payload: Types.NetworkSoundPayload = {
 		soundInput = soundInput,
 		parent = opt.parent,
+		position = opt.position,
 		volume = opt.volume,
 		pitch = opt.pitch,
 		pitchVariance = opt.pitchVariance,
 		category = opt.category or "SFX",
+		rollOffMinDistance = opt.rollOffMinDistance,
+		rollOffMaxDistance = opt.rollOffMaxDistance,
 		isCombo = opt.isCombo,
 	}
 
@@ -354,10 +459,13 @@ local function initClientNetworkListener()
 		else
 			AudioModule.playOneShot(payload.soundInput, {
 				parent = payload.parent,
+				position = payload.position,
 				volume = payload.volume,
 				pitch = payload.pitch,
 				pitchVariance = payload.pitchVariance,
 				category = payload.category,
+				rollOffMinDistance = payload.rollOffMinDistance,
+				rollOffMaxDistance = payload.rollOffMaxDistance,
 			})
 		end
 	end)

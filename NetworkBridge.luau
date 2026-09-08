@@ -111,19 +111,43 @@ function NetworkBridge.listen(actionName: string, callback: (payload: any, playe
 				end)
 			end
 		elseif RunService:IsClient() then
-			local remotesFolder = ReplicatedStorage:WaitForChild("Remotes", 5) or ReplicatedStorage
-			local candidateName = "AudioModule_" .. actionName
-			local remote = remotesFolder:FindFirstChild(candidateName) or remotesFolder:FindFirstChild(actionName)
-			if not remote then
-				remote = remotesFolder:WaitForChild(candidateName, 8) :: RemoteEvent?
-			end
-			if remote and remote:IsA("RemoteEvent") then
-				remote.OnClientEvent:Connect(function(payload)
-					callback(payload, nil :: any)
-				end)
-			end
+			task.spawn(function()
+				local remotesFolder = ReplicatedStorage:WaitForChild("Remotes", 10) or ReplicatedStorage
+				local candidateName = "AudioModule_" .. actionName
+				local remote = remotesFolder:FindFirstChild(candidateName) or remotesFolder:FindFirstChild(actionName)
+				if not remote then
+					remote = remotesFolder:WaitForChild(candidateName, 5) :: RemoteEvent?
+				end
+
+				if remote and remote:IsA("RemoteEvent") then
+					remote.OnClientEvent:Connect(function(payload)
+						callback(payload, nil :: any)
+					end)
+				else
+					-- Robust fallback: listen for ChildAdded in case remote replicates late
+					local connection: RBXScriptConnection?
+					connection = remotesFolder.ChildAdded:Connect(function(child)
+						if child.Name == candidateName or child.Name == actionName then
+							if connection then
+								connection:Disconnect()
+								connection = nil
+							end
+							if child:IsA("RemoteEvent") then
+								child.OnClientEvent:Connect(function(payload)
+									callback(payload, nil :: any)
+								end)
+							end
+						end
+					end)
+				end
+			end)
 		end
 	end
+end
+
+-- Ensure default networking remotes exist on server load
+if RunService:IsServer() then
+	getRemote("PlaySound")
 end
 
 return NetworkBridge
