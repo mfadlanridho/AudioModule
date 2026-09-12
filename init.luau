@@ -73,36 +73,48 @@ function AudioModule.registerSounds(sounds: { [string]: any })
 	log("Registered named sounds into audio registry")
 end
 
--- Helper: Resolves sound ID and base volume from registered sounds, physical folder, instance, or ID
-local function resolveSound(soundInput: any): (string?, number, number, SoundCategory?)
+-- Helper: Resolves sound ID and base volume from physical SoundService, physical folder, registered sounds, instance, or ID
+local function resolveSound(soundInput: any): (string?, number, number, SoundCategory?, Sound?)
+	if typeof(soundInput) == "Instance" and soundInput:IsA("Sound") then
+		return soundInput.SoundId, soundInput.Volume, soundInput.PlaybackSpeed, nil, soundInput
+	end
+
+	if typeof(soundInput) == "string" then
+		-- 1. Check physical SoundService first (native Roblox sound container)
+		local SoundService = game:GetService("SoundService")
+		local physicalSound = SoundService:FindFirstChild(soundInput, true)
+		if physicalSound and physicalSound:IsA("Sound") then
+			return physicalSound.SoundId, physicalSound.Volume, physicalSound.PlaybackSpeed, nil, physicalSound
+		end
+
+		-- 2. Check physical ReplicatedStorage.Audio folder
+		local audioFolder = ensurePhysicalAudioFolder()
+		local soundTemplate = audioFolder:FindFirstChild(soundInput, true)
+		if soundTemplate and soundTemplate:IsA("Sound") then
+			return soundTemplate.SoundId, soundTemplate.Volume, soundTemplate.PlaybackSpeed, nil, soundTemplate
+		end
+	end
+
+	-- 3. Fallback to registered sounds table
 	if registeredSounds[soundInput] then
 		local entry = registeredSounds[soundInput]
 		if typeof(entry) == "table" and entry.soundId then
-			return entry.soundId, entry.volume or 1.0, entry.pitch or 1.0, entry.category
+			return entry.soundId, entry.volume or 1.0, entry.pitch or 1.0, entry.category, nil
 		elseif typeof(entry) == "string" then
 			soundInput = entry
 		end
 	end
 
-	if typeof(soundInput) == "Instance" and soundInput:IsA("Sound") then
-		return soundInput.SoundId, soundInput.Volume, soundInput.PlaybackSpeed, nil
-	elseif typeof(soundInput) == "string" then
-		-- Check physical ReplicatedStorage.Audio folder
-		local audioFolder = ensurePhysicalAudioFolder()
-		local soundTemplate = audioFolder:FindFirstChild(soundInput, true)
-		if soundTemplate and soundTemplate:IsA("Sound") then
-			return soundTemplate.SoundId, soundTemplate.Volume, soundTemplate.PlaybackSpeed, nil
-		end
-
+	if typeof(soundInput) == "string" then
 		-- Raw asset ID
 		if string.match(soundInput, "^rbxassetid://") or string.match(soundInput, "^http") then
-			return soundInput, 1.0, 1.0, nil
+			return soundInput, 1.0, 1.0, nil, nil
 		elseif string.match(soundInput, "^%d+$") then
-			return "rbxassetid://" .. soundInput, 1.0, 1.0, nil
+			return "rbxassetid://" .. soundInput, 1.0, 1.0, nil, nil
 		end
 	end
 
-	return nil, 1.0, 1.0, nil
+	return nil, 1.0, 1.0, nil, nil
 end
 
 --- Preloads sound instances, asset IDs, or folder keys asynchronously using ContentProvider.
@@ -164,7 +176,7 @@ function AudioModule.playOneShot(soundInput: any, options: PlayOptions?): Sound?
 		return nil
 	end
 
-	local soundId, defaultVol, defaultPitch, registeredCategory = resolveSound(soundInput)
+	local soundId, defaultVol, defaultPitch, registeredCategory, templateSound = resolveSound(soundInput)
 	if not soundId then
 		log("⚠️ playOneShot failed: could not resolve sound input:", tostring(soundInput))
 		return nil
@@ -188,9 +200,23 @@ function AudioModule.playOneShot(soundInput: any, options: PlayOptions?): Sound?
 	sound.PlaybackSpeed = pitch
 	sound.SoundGroup = Channels.GetGroup(category)
 
-	if opt.rollOffMinDistance then sound.RollOffMinDistance = opt.rollOffMinDistance end
-	if opt.rollOffMaxDistance then sound.RollOffMaxDistance = opt.rollOffMaxDistance end
-	if opt.rollOffMode then sound.RollOffMode = opt.rollOffMode end
+	if opt.rollOffMinDistance then
+		sound.RollOffMinDistance = opt.rollOffMinDistance
+	elseif templateSound then
+		sound.RollOffMinDistance = templateSound.RollOffMinDistance
+	end
+
+	if opt.rollOffMaxDistance then
+		sound.RollOffMaxDistance = opt.rollOffMaxDistance
+	elseif templateSound then
+		sound.RollOffMaxDistance = templateSound.RollOffMaxDistance
+	end
+
+	if opt.rollOffMode then
+		sound.RollOffMode = opt.rollOffMode
+	elseif templateSound then
+		sound.RollOffMode = templateSound.RollOffMode
+	end
 
 	local tempAttachment: Attachment? = nil
 	if opt.parent then
