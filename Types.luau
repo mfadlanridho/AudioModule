@@ -26,6 +26,7 @@ export type PlayOptions = {
 	loop: boolean?,
 	fadeInTime: number?,
 	isCombo: boolean?,
+	minInterval: number?, -- Skip the sound if the same one started less than this many seconds ago
 }
 
 export type NetworkSoundPayload = {
@@ -39,6 +40,7 @@ export type NetworkSoundPayload = {
 	rollOffMinDistance: number?,
 	rollOffMaxDistance: number?,
 	isCombo: boolean?,
+	minInterval: number?, -- Skip the sound if the same one started less than this many seconds ago
 }
 
 return {}

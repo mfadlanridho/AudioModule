@@ -21,7 +21,15 @@ local LoggerModule = (ReplicatedStorage:FindFirstChild("Packages") and Replicate
 	or (ReplicatedStorage:FindFirstChild("Submodules") and ReplicatedStorage.Submodules:FindFirstChild("LoggerModule"))
 local Logger = if LoggerModule then require(LoggerModule) :: any else nil
 
-local log = if Logger and Logger.create then Logger.create("AudioModule") else function(...) print("[AudioModule]", ...) end
+local baseLog = if Logger and Logger.create then Logger.create("AudioModule") else function(...) print("[AudioModule]", ...) end
+
+-- Per-sound logging is off by default: it floods the console in games that play many sounds a second.
+local debugEnabled = false
+local function log(...)
+	if debugEnabled then
+		baseLog(...)
+	end
+end
 
 export type PlayOptions = Types.PlayOptions
 export type SoundCategory = Types.SoundCategory
@@ -34,8 +42,17 @@ AudioModule.NetworkBridge = NetworkBridge
 function AudioModule.setNetworkProvider(provider: NetworkProvider)
 	NetworkBridge.setProvider(provider)
 end
+
+--- Turns per-sound debug logging on or off (off by default).
+function AudioModule.setDebug(enabled: boolean)
+	debugEnabled = enabled
+end
+
 local activeLoops: { [string]: Sound } = {}
 local activeAttachments: { [string]: Attachment } = {}
+
+-- Last start time per sound id, for the minInterval throttle
+local lastPlayed: { [string]: number } = {}
 
 -- Pitch combo state
 local comboCount = 0
@@ -79,29 +96,31 @@ local function resolveSound(soundInput: any): (string?, number, number, SoundCat
 		return soundInput.SoundId, soundInput.Volume, soundInput.PlaybackSpeed, nil, soundInput
 	end
 
-	if typeof(soundInput) == "string" then
-		-- 1. Check physical SoundService first (native Roblox sound container)
+	-- 1. Registered sounds table first: a plain lookup, no instance search
+	local isAlias = false
+	local entry = if soundInput ~= nil then registeredSounds[soundInput] else nil
+	if entry then
+		if typeof(entry) == "table" and entry.soundId then
+			return entry.soundId, entry.volume or 1.0, entry.pitch or 1.0, entry.category, nil
+		elseif typeof(entry) == "string" then
+			soundInput = entry
+			isAlias = true
+		end
+	end
+
+	if typeof(soundInput) == "string" and not isAlias then
+		-- 2. Check physical SoundService (native Roblox sound container)
 		local SoundService = game:GetService("SoundService")
 		local physicalSound = SoundService:FindFirstChild(soundInput, true)
 		if physicalSound and physicalSound:IsA("Sound") then
 			return physicalSound.SoundId, physicalSound.Volume, physicalSound.PlaybackSpeed, nil, physicalSound
 		end
 
-		-- 2. Check physical ReplicatedStorage.Audio folder
+		-- 3. Check physical ReplicatedStorage.Audio folder
 		local audioFolder = ensurePhysicalAudioFolder()
 		local soundTemplate = audioFolder:FindFirstChild(soundInput, true)
 		if soundTemplate and soundTemplate:IsA("Sound") then
 			return soundTemplate.SoundId, soundTemplate.Volume, soundTemplate.PlaybackSpeed, nil, soundTemplate
-		end
-	end
-
-	-- 3. Fallback to registered sounds table
-	if registeredSounds[soundInput] then
-		local entry = registeredSounds[soundInput]
-		if typeof(entry) == "table" and entry.soundId then
-			return entry.soundId, entry.volume or 1.0, entry.pitch or 1.0, entry.category, nil
-		elseif typeof(entry) == "string" then
-			soundInput = entry
 		end
 	end
 
@@ -141,6 +160,8 @@ function AudioModule.preloadSounds(soundInputs: { any })
 end
 
 local function attachSoundApiLogging(sound: Sound, soundId: string)
+	if not debugEnabled then return end
+
 	if sound.IsLoaded then
 		log(string.format("🔊 [Sound API] Sound is loaded & playing (%s | Length: %.2fs)", soundId, sound.TimeLength))
 	else
@@ -178,11 +199,22 @@ function AudioModule.playOneShot(soundInput: any, options: PlayOptions?): Sound?
 
 	local soundId, defaultVol, defaultPitch, registeredCategory, templateSound = resolveSound(soundInput)
 	if not soundId then
-		log("⚠️ playOneShot failed: could not resolve sound input:", tostring(soundInput))
+		warn("[AudioModule] playOneShot failed: could not resolve sound input:", tostring(soundInput))
 		return nil
 	end
 
 	local opt = options or {}
+
+	-- Throttle: skip the sound if the same one started less than minInterval seconds ago
+	if opt.minInterval and opt.minInterval > 0 then
+		local now = os.clock()
+		local last = lastPlayed[soundId]
+		if last and now - last < opt.minInterval then
+			return nil
+		end
+		lastPlayed[soundId] = now
+	end
+
 	local volume = opt.volume or defaultVol
 	local pitch = opt.pitch or defaultPitch
 	local category = opt.category or registeredCategory or "SFX"
@@ -198,7 +230,12 @@ function AudioModule.playOneShot(soundInput: any, options: PlayOptions?): Sound?
 	sound.SoundId = soundId
 	sound.Volume = volume
 	sound.PlaybackSpeed = pitch
-	sound.SoundGroup = Channels.GetGroup(category)
+	-- A template keeps the SoundGroup it was given in Studio unless a category is asked for
+	if not opt.category and not registeredCategory and templateSound and templateSound.SoundGroup then
+		sound.SoundGroup = templateSound.SoundGroup
+	else
+		sound.SoundGroup = Channels.GetGroup(category)
+	end
 
 	if opt.rollOffMinDistance then
 		sound.RollOffMinDistance = opt.rollOffMinDistance
@@ -280,11 +317,22 @@ end
 -- @param options PlayOptions?
 -- @return Sound?
 function AudioModule.playLooped(loopId: string, soundInput: any, options: PlayOptions?): Sound?
-	if activeLoops[loopId] then return activeLoops[loopId] end
+	local existing = activeLoops[loopId]
+	if existing then
+		if existing.Parent then return existing end
+
+		-- The loop was destroyed with its parent; forget it so the id can be used again
+		activeLoops[loopId] = nil
+		local staleAttachment = activeAttachments[loopId]
+		activeAttachments[loopId] = nil
+		if staleAttachment then
+			staleAttachment:Destroy()
+		end
+	end
 
 	local soundId, defaultVol, defaultPitch, registeredCategory = resolveSound(soundInput)
 	if not soundId then
-		log("⚠️ playLooped failed: could not resolve sound input:", tostring(soundInput))
+		warn("[AudioModule] playLooped failed: could not resolve sound input:", tostring(soundInput))
 		return nil
 	end
 
@@ -316,6 +364,11 @@ function AudioModule.playLooped(loopId: string, soundInput: any, options: PlayOp
 	end
 
 	attachSoundApiLogging(sound, soundId)
+	if opt.fadeInTime and opt.fadeInTime > 0 then
+		local targetVolume = sound.Volume
+		sound.Volume = 0
+		TweenService:Create(sound, TweenInfo.new(opt.fadeInTime), { Volume = targetVolume }):Play()
+	end
 	sound:Play()
 	activeLoops[loopId] = sound
 	log(string.format("🔄 playLooped (%s): %s | Vol: %.2f | Parent: %s", loopId, soundId, sound.Volume, sound.Parent and sound.Parent.Name or "Nil"))
@@ -436,6 +489,7 @@ function AudioModule.playOnAllClients(soundInput: any, options: PlayOptions?)
 		rollOffMinDistance = opt.rollOffMinDistance,
 		rollOffMaxDistance = opt.rollOffMaxDistance,
 		isCombo = opt.isCombo,
+		minInterval = opt.minInterval,
 	}
 
 	NetworkBridge.send("PlaySound", payload, nil)
@@ -466,6 +520,7 @@ function AudioModule.playOnClient(targetPlayer: Player, soundInput: any, options
 		rollOffMinDistance = opt.rollOffMinDistance,
 		rollOffMaxDistance = opt.rollOffMaxDistance,
 		isCombo = opt.isCombo,
+		minInterval = opt.minInterval,
 	}
 
 	NetworkBridge.send("PlaySound", payload, targetPlayer)
@@ -492,6 +547,7 @@ local function initClientNetworkListener()
 				category = payload.category,
 				rollOffMinDistance = payload.rollOffMinDistance,
 				rollOffMaxDistance = payload.rollOffMaxDistance,
+				minInterval = payload.minInterval,
 			})
 		end
 	end)
