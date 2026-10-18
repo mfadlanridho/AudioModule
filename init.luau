@@ -225,9 +225,20 @@ function AudioModule.playOneShot(soundInput: any, options: PlayOptions?): Sound?
 		pitch = math.clamp(pitch + rng, 0.1, 3.0)
 	end
 
-	local sound = Instance.new("Sound")
+	-- Clone a Studio template so every property and child effect (EQ, reverb, ...) carries over;
+	-- options below only override what is passed in.
+	local sound: Sound
+	if templateSound then
+		sound = templateSound:Clone()
+		sound.Looped = false
+		sound.PlayOnRemove = false
+		sound.TimePosition = 0
+	else
+		sound = Instance.new("Sound")
+		sound.SoundId = soundId
+	end
+	-- Not the template's name, so name lookups never find a playing copy instead of the template
 	sound.Name = "AudioModule_OneShot"
-	sound.SoundId = soundId
 	sound.Volume = volume
 	sound.PlaybackSpeed = pitch
 	-- A template keeps the SoundGroup it was given in Studio unless a category is asked for
@@ -239,20 +250,12 @@ function AudioModule.playOneShot(soundInput: any, options: PlayOptions?): Sound?
 
 	if opt.rollOffMinDistance then
 		sound.RollOffMinDistance = opt.rollOffMinDistance
-	elseif templateSound then
-		sound.RollOffMinDistance = templateSound.RollOffMinDistance
 	end
-
 	if opt.rollOffMaxDistance then
 		sound.RollOffMaxDistance = opt.rollOffMaxDistance
-	elseif templateSound then
-		sound.RollOffMaxDistance = templateSound.RollOffMaxDistance
 	end
-
 	if opt.rollOffMode then
 		sound.RollOffMode = opt.rollOffMode
-	elseif templateSound then
-		sound.RollOffMode = templateSound.RollOffMode
 	end
 
 	local tempAttachment: Attachment? = nil

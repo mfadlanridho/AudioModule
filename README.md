@@ -26,6 +26,7 @@ AudioModule/
 - 📈 **Combo Pitch Scaling**: `playPickupCombo()` automatically scales pitch up from `1.0` -> `1.5` for streak feedback.
 - 🎵 **BGM Cross-Fading**: Smoothly cross-fade background music tracks using `TweenService`.
 - 🔁 **Tracked Loops**: Start and stop looped sounds cleanly with optional fade-out timers.
+- 🧩 **Studio Sound Templates**: `Sound` instances placed in `SoundService` or `ReplicatedStorage.Audio` are cloned on play, so every property and child effect (EQ, reverb, ...) set in Studio is kept.
 
 ---
 
